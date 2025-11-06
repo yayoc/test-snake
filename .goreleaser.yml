@@ -1,6 +1,6 @@
 version: 2
 
-project_name: test-snake
+project_name: testsnake
 
 builds:
   - id: testsnake
