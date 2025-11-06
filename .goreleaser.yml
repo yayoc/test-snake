@@ -10,7 +10,6 @@ builds:
       - -buildmode=plugin
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
       - arm64

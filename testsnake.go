@@ -10,8 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// TestSnakeAnalyzer checks that test names in t.Run use snake_case
-var TestSnakeAnalyzer = &analysis.Analyzer{
+// Analyzer checks that test names in t.Run use snake_case
+var Analyzer = &analysis.Analyzer{
 	Name:             "testsnake",
 	Doc:              "checks that test names passed to t.Run follow snake_case convention",
 	Run:              run,
@@ -183,7 +183,3 @@ func isValidSnakeCase(name string) bool {
 	return snakeCasePattern.MatchString(name)
 }
 
-// New is the entry point for the plugin
-func New(conf any) ([]*analysis.Analyzer, error) {
-	return []*analysis.Analyzer{TestSnakeAnalyzer}, nil
-}

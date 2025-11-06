@@ -10,7 +10,7 @@ import (
 )
 
 func Test_analyzer(t *testing.T) {
-	analysistest.Run(t, testdataDir(t), TestSnakeAnalyzer, "testlintdata/test-snake")
+	analysistest.Run(t, testdataDir(t), Analyzer, "testlintdata/testsnake")
 }
 
 func testdataDir(t *testing.T) string {

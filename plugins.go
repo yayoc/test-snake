@@ -6,10 +6,10 @@ import (
 )
 
 func init() {
-	register.Plugin("gopher", New)
+	register.Plugin("testsnake", newPlugin)
 }
 
-func New(settings any) (register.LinterPlugin, error) {
+func newPlugin(settings any) (register.LinterPlugin, error) {
 	// The configuration type will be map[string]any or []interface, it depends on your configuration.
 	// You can use https://github.com/go-viper/mapstructure to convert map to struct.
 
