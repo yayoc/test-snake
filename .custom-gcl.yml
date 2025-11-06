@@ -1,4 +1,4 @@
 version: v1.62.2
 plugins:
-  - module: "github.com/yayoc/test-snake"
+  - module: "github.com/yayoc/testsnake"
     path: "."
