@@ -3,7 +3,7 @@ linters-settings:
     testsnake:
       path: ./testsnake.so
       description: Checks that test function names follow snake_case convention
-      original-url: github.com/yayoc/test-snake
+      original-url: github.com/yayoc/testsnake
 
 linters:
   enable:

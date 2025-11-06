@@ -1,4 +1,4 @@
-module github.com/yayoc/test-snake
+module github.com/yayoc/testsnake
 
 go 1.24.0
 
