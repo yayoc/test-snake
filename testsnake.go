@@ -2,6 +2,7 @@ package testsnake
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"regexp"
 	"strings"
@@ -54,6 +55,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 			// Get the first argument (test name)
 			firstArg := callExpr.Args[0]
+
+			// Check if it's a selector expression (table-driven test pattern like tt.name)
+			if selExpr, ok := firstArg.(*ast.SelectorExpr); ok {
+				// Handle table-driven tests
+				testNames := extractTableTestNames(pass, file, selExpr, callExpr)
+				for name, pos := range testNames {
+					if !isValidSnakeCase(name) {
+						pass.Reportf(pos, "test name %q should use snake_case (e.g., \"my_test_case\")", name)
+					}
+				}
+				return true
+			}
 
 			// Try to get the string value (either from literal or constant variable)
 			testName := getStringValue(pass, firstArg)
@@ -142,6 +155,105 @@ func findVarDecl(pass *analysis.Pass, ident *ast.Ident) string {
 	}
 
 	return result
+}
+
+// extractTableTestNames extracts test names from table-driven tests
+// It handles patterns like: for _, tt := range tests { t.Run(tt.name, ...) }
+func extractTableTestNames(pass *analysis.Pass, file *ast.File, selExpr *ast.SelectorExpr, callExpr *ast.CallExpr) map[string]token.Pos {
+	result := make(map[string]token.Pos)
+
+	// Get the field name being accessed (e.g., "name" from tt.name)
+	fieldName := selExpr.Sel.Name
+
+	// Find the enclosing for/range statement
+	var rangeStmt *ast.RangeStmt
+	var found bool
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+
+		if rs, ok := n.(*ast.RangeStmt); ok {
+			// Check if our callExpr is inside this range statement
+			if rs.Pos() < callExpr.Pos() && callExpr.End() < rs.End() {
+				rangeStmt = rs
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+
+	if rangeStmt == nil {
+		return result
+	}
+
+	// Get the identifier of the slice being ranged over
+	var sliceIdent *ast.Ident
+	switch x := rangeStmt.X.(type) {
+	case *ast.Ident:
+		sliceIdent = x
+	default:
+		return result
+	}
+
+	// Find the slice declaration
+	obj := pass.TypesInfo.ObjectOf(sliceIdent)
+	if obj == nil {
+		return result
+	}
+
+	// Find the composite literal (slice initialization)
+	ast.Inspect(file, func(n ast.Node) bool {
+		// Look for assignment or declaration
+		switch stmt := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range stmt.Lhs {
+				if lhsIdent, ok := lhs.(*ast.Ident); ok {
+					if pass.TypesInfo.ObjectOf(lhsIdent) == obj && i < len(stmt.Rhs) {
+						// Found the assignment - extract test names
+						if compLit, ok := stmt.Rhs[i].(*ast.CompositeLit); ok {
+							extractNamesFromCompositeLit(compLit, fieldName, result)
+						}
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for i, name := range stmt.Names {
+				if pass.TypesInfo.ObjectOf(name) == obj && i < len(stmt.Values) {
+					// Found the declaration - extract test names
+					if compLit, ok := stmt.Values[i].(*ast.CompositeLit); ok {
+						extractNamesFromCompositeLit(compLit, fieldName, result)
+					}
+				}
+			}
+		}
+		return true
+	})
+
+	return result
+}
+
+// extractNamesFromCompositeLit extracts field values from a composite literal
+func extractNamesFromCompositeLit(compLit *ast.CompositeLit, fieldName string, result map[string]token.Pos) {
+	for _, elt := range compLit.Elts {
+		if innerLit, ok := elt.(*ast.CompositeLit); ok {
+			// Look through the key-value pairs in the struct literal
+			for _, innerElt := range innerLit.Elts {
+				if kv, ok := innerElt.(*ast.KeyValueExpr); ok {
+					// Check if this is the field we're looking for
+					if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == fieldName {
+						// Extract the string value
+						if lit, ok := kv.Value.(*ast.BasicLit); ok {
+							testName := strings.Trim(lit.Value, "\"")
+							result[testName] = lit.Pos()
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 // isTestingType checks if the expression is a testing type (testing.T, testing.B, testing.F)
