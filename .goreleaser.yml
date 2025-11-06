@@ -4,32 +4,13 @@ project_name: test-snake
 
 builds:
   - id: testsnake
-    main: .
+    main: ./cmd/testsnake
     binary: testsnake
-    flags:
-      - -buildmode=plugin
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-
-archives:
-  - format: tar.gz
-    name_template: >-
-      {{ .ProjectName }}-
-      {{- .Version }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else }}{{ .Arch }}{{ end }}
-    files:
-      - README.md
-      - LICENSE
 
 release:
   github:
     owner: yayoc
-    name: test-snake
+    name: testsnake
   draft: false
   prerelease: auto
 
