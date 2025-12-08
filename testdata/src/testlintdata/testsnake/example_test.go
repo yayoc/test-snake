@@ -80,3 +80,30 @@ func TestExample(t *testing.T) {
 		// This should fail
 	})
 }
+
+func TestParallel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{
+			name: "invalid snake case", // want "test name \"invalid snake case\" should use snake_case"
+			want: "foobar"
+		},
+		{
+			name: "_invalid_snake_case_", // want "test name \"_invalid_snake_case_\" should use snake_case"
+			want: "foobar"
+		},
+		{
+			name: "valid_snake_case",
+			want: "foobar"
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+		})
+	}
+}

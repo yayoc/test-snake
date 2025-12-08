@@ -2,6 +2,8 @@ package testsnake
 
 import (
 	"go/ast"
+	"go/constant"
+	"go/token"
 	"go/types"
 	"regexp"
 	"strings"
@@ -10,10 +12,16 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
+const (
+	name = "testsnake"
+	doc = "testsnake checks that test names in t.Run use snake_case convention"
+	msg = "test name %q should use snake_case (e.g., \"my_test_case\")"
+)
+
 // Analyzer checks that test names in t.Run use snake_case
 var Analyzer = &analysis.Analyzer{
-	Name:             "testsnake",
-	Doc:              "checks that test names passed to t.Run follow snake_case convention",
+	Name:             name,
+	Doc:              doc,
 	Run:              run,
 	RunDespiteErrors: true,
 }
@@ -55,15 +63,31 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			// Get the first argument (test name)
 			firstArg := callExpr.Args[0]
 
+			// Check if this is a selector expression (table-driven test)
+			if sel, ok := firstArg.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok {
+					// Try to extract all test names from the table with their positions
+					testCases := extractValuesWithPosFromRange(pass, ident, sel.Sel.Name)
+					for _, tc := range testCases {
+						if tc.value != "" && !isValidSnakeCase(tc.value) {
+							pass.Reportf(tc.pos, msg, tc.value)
+						}
+					}
+					if len(testCases) > 0 {
+						return true
+					}
+				}
+			}
+
 			// Try to get the string value (either from literal or constant variable)
-			testName := getStringValue(pass, firstArg)
+			testName := strVal(pass, firstArg)
 			if testName == "" {
 				return true
 			}
 
 			// Check if the test name follows snake_case
 			if !isValidSnakeCase(testName) {
-				pass.Reportf(callExpr.Pos(), "test name %q should use snake_case (e.g., \"my_test_case\")", testName)
+				pass.Reportf(callExpr.Pos(), msg, testName)
 			}
 
 			return true
@@ -73,39 +97,177 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil
 }
 
-// getStringValue extracts the string value from an expression
-// It handles both string literals and variables/constants
-func getStringValue(pass *analysis.Pass, expr ast.Expr) string {
-	// Case 1: String literal
-	if lit, ok := expr.(*ast.BasicLit); ok {
-		return strings.Trim(lit.Value, "\"")
+type value interface{} // string | structConst
+
+// valueWithPos holds a string value and its position in the source
+type valueWithPos struct {
+	value string
+	pos   token.Pos
+}
+
+// strVal extracts the string value from an expression
+func strVal(pass *analysis.Pass, expr ast.Expr) string {
+	val, ok := eval(pass, expr)
+	if ok {
+		return val
 	}
 
-	// Case 2: Identifier (variable or constant)
+	return ""
+}
+
+// fieldName extracts the field name from a key expression
+func fieldName(key ast.Expr) string {
+	if ident, ok := key.(*ast.Ident); ok {
+		return ident.Name
+	}
+	return ""
+}
+
+// eval evaluates an expression and returns its value
+func eval(pass *analysis.Pass, expr ast.Expr) (string, bool) {
+	// string literal
+	if lit, ok := expr.(*ast.BasicLit); ok {
+		return strings.Trim(lit.Value, "\""), true
+	}
+
+	// constant value
+	if tv, ok := pass.TypesInfo.Types[expr]; ok && tv.Value != nil {
+		if tv.Value.Kind() == constant.String {
+			return strings.Trim(tv.Value.String(), "\""), true
+		}
+	}
+
+	// selector expression (e.g., tt.name in table-driven tests)
+	// This is handled at the call site in the main run function
+	if _, ok := expr.(*ast.SelectorExpr); ok {
+		return "", false
+	}
+
+	// identifier
 	if ident, ok := expr.(*ast.Ident); ok {
-		// First check if it's a constant
 		if obj := pass.TypesInfo.ObjectOf(ident); obj != nil {
+			// Check if it's a constant
 			if konst, ok := obj.(*types.Const); ok {
-				return strings.Trim(konst.Val().String(), "\"")
+				if konst.Val().Kind() == constant.String {
+					return strings.Trim(konst.Val().String(), "\""), true
+				}
 			}
 
-			// For variables, try to find the assignment
+			// Check if it's a variable
 			if _, ok := obj.(*types.Var); ok {
-				// Look for the variable's initialization in the same function
+				// Look for the variable's initialization
 				if decl := findVarDecl(pass, ident); decl != "" {
-					return decl
+					return decl, true
 				}
 			}
 		}
 	}
 
-	// Case 3: Constant expression
-	tv, ok := pass.TypesInfo.Types[expr]
-	if ok && tv.Value != nil {
-		return strings.Trim(tv.Value.String(), "\"")
+	return "", false
+}
+
+// extractFieldValueWithPos extracts a string field value and its position from a composite literal
+func extractFieldValueWithPos(pass *analysis.Pass, comp *ast.CompositeLit, targetField string) (string, token.Pos) {
+	for _, elt := range comp.Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			// Get the field name
+			key := fieldName(kv.Key)
+			if key == targetField {
+				// Recursively evaluate the value
+				if val, ok := eval(pass, kv.Value); ok {
+					return val, kv.Value.Pos()
+				}
+			}
+		}
+	}
+	return "", token.NoPos
+}
+
+// extractValuesWithPosFromRange extracts field values with positions from a slice used in a range statement
+func extractValuesWithPosFromRange(pass *analysis.Pass, rangeVar *ast.Ident, fieldName string) []valueWithPos {
+	obj := pass.TypesInfo.ObjectOf(rangeVar)
+	if obj == nil {
+		return nil
 	}
 
-	return ""
+	var values []valueWithPos
+	var rangeExpr ast.Expr
+
+	// Find the range statement where this variable is defined
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if rangeStmt, ok := n.(*ast.RangeStmt); ok {
+				// Check if this range statement defines our variable
+				if ident, ok := rangeStmt.Value.(*ast.Ident); ok {
+					if pass.TypesInfo.ObjectOf(ident) == obj {
+						rangeExpr = rangeStmt.X
+						return false // Found it, stop searching
+					}
+				}
+			}
+			return true
+		})
+		if rangeExpr != nil {
+			break
+		}
+	}
+
+	if rangeExpr == nil {
+		return nil
+	}
+
+	// Get the slice being ranged over
+	var sliceLit *ast.CompositeLit
+
+	// If rangeExpr is an identifier, find its declaration
+	if ident, ok := rangeExpr.(*ast.Ident); ok {
+		sliceObj := pass.TypesInfo.ObjectOf(ident)
+		if sliceObj == nil {
+			return nil
+		}
+
+		// Find the slice declaration
+		for _, file := range pass.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				if assign, ok := n.(*ast.AssignStmt); ok {
+					for i, lhs := range assign.Lhs {
+						if lhsIdent, ok := lhs.(*ast.Ident); ok {
+							if pass.TypesInfo.ObjectOf(lhsIdent) == sliceObj && i < len(assign.Rhs) {
+								if comp, ok := assign.Rhs[i].(*ast.CompositeLit); ok {
+									sliceLit = comp
+									return false
+								}
+							}
+						}
+					}
+				}
+				return true
+			})
+			if sliceLit != nil {
+				break
+			}
+		}
+	} else if comp, ok := rangeExpr.(*ast.CompositeLit); ok {
+		// Direct composite literal in range
+		sliceLit = comp
+	}
+
+	if sliceLit == nil {
+		return nil
+	}
+
+	// Extract values with positions from each element in the slice
+	for _, elt := range sliceLit.Elts {
+		if comp, ok := elt.(*ast.CompositeLit); ok {
+			// Extract the field value and position from this struct
+			fieldVal, fieldPos := extractFieldValueWithPos(pass, comp, fieldName)
+			if fieldVal != "" {
+				values = append(values, valueWithPos{value: fieldVal, pos: fieldPos})
+			}
+		}
+	}
+
+	return values
 }
 
 // findVarDecl tries to find the string literal value assigned to a variable
